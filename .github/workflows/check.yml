@@ -1,0 +1,43 @@
+name: Release Check
+
+on:
+  schedule:
+    - cron: '0 */2 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: release-check
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - run: npm ci
+
+      - name: Restore state cache
+        uses: actions/cache@v4
+        with:
+          path: data/
+          key: release-state-${{ github.ref }}
+          restore-keys: release-state-
+
+      - name: Run release check
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          AI_API_KEY: ${{ secrets.AI_API_KEY }}
+          AI_PROVIDER: ${{ vars.AI_PROVIDER || 'openai-completions' }}
+          AI_BASE_URL: ${{ vars.AI_BASE_URL || '' }}
+          AI_MODEL: ${{ vars.AI_MODEL || 'gpt-4o-mini' }}
+          TIMEZONE: ${{ vars.TIMEZONE || 'Asia/Shanghai' }}
+          TARGET_LANG: ${{ vars.TARGET_LANG || 'English' }}
+          SUBSCRIBE_REPOS: ${{ vars.SUBSCRIBE_REPOS }}
+        run: npm run check
