@@ -338,5 +338,5 @@ npm run build  # 编译 TypeScript
 
 ## 致谢与来源
 
-本项目基于 [nicepkg/github-subscribe-bot](https://github.com/nicepkg/github-subscribe-bot)（MIT License）进行二次开发。
+本项目基于 [tbphp/github-subscribe-bot](https://github.com/tbphp/github-subscribe-bot)（MIT License）进行二次开发。
 当前仓库可能包含额外修改，并由本仓库维护者独立维护。
