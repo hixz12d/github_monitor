@@ -331,5 +331,5 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for development guidelines.
 
 ## Attribution
 
-This project is based on [nicepkg/github-subscribe-bot](https://github.com/nicepkg/github-subscribe-bot) (MIT License).
+This project is based on [tbphp/github-subscribe-bot](https://github.com/tbphp/github-subscribe-bot) (MIT License).
 This repository may include additional changes and is independently maintained.
