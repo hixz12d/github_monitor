@@ -105,6 +105,16 @@ docker compose down
 - 如果推送目标是**公开频道**且有 username，直接用 `@channel_username` 即可。
 - 如果是**私有频道/群组**，通常需要数字 chat id（经常以 `-100` 开头）。
 
+现在有两种获取方式：
+
+1. 至少配置 `TELEGRAM_BOT_TOKEN` 启动 bot，进入 **onboarding 模式**。
+2. 在私聊里给 bot 发送 `/start`，或者把 bot 加到群组/频道后触发一次更新。
+3. 从以下位置读取发现到的 chat id：
+   - `/start` 的返回消息
+   - `data/discovered_chats.json`
+   - 容器日志里的 `[TG] Discovered chat ...`
+4. 如果你想直接拿到可复制的配置行，在当前 chat 发送 `/bind`。
+
 一种简单方法（PowerShell）：
 
 1. 把 Bot 拉进目标群/频道，并发送一条消息。
@@ -116,6 +126,8 @@ Invoke-RestMethod "https://api.telegram.org/bot$token/getUpdates" | ConvertTo-Js
 ```
 
 在输出里找到 `result[].message.chat.id`（或 `result[].channel_post.chat.id`），然后把该数字填到 `TELEGRAM_CHAT_ID`。
+
+> 如果缺少 `CRON`、`AI_API_KEY` 或 `TELEGRAM_CHAT_ID`，守护进程现在会退化为 **命令/onboarding 模式**，而不是启动即退出。在这个模式下不会执行 Release 监控，但 Telegram 指令轮询仍可工作，你可以先用 `/start` 和 `/bind` 完成首次接入。
 
 > `TARGET_LANG` 同时控制 AI 翻译输出和分类标签（如 ✨ 新功能）。内置标签翻译支持`English`、`Chinese`和`Japanese`，其他语言将使用英文标签配合 AI 翻译内容。
 >
@@ -234,6 +246,8 @@ docker compose restart
 
 1. 设置 `TELEGRAM_ADMIN_CHAT_ID`（推荐）为你要控制机器人的 chat id（数字 ID 或 `@username`）。
 2. 运行后，在该 chat 中发送指令：
+   - `/start`：显示当前 chat 信息，并给出首次接入提示
+   - `/bind`：输出当前 chat 可直接复制的 `TELEGRAM_CHAT_ID` / `TELEGRAM_ADMIN_CHAT_ID` 配置行
    - `/list`：列出所有订阅，并提供 Unsubscribe 按钮
    - `/subscribe owner/repo` 或 `/subscribe https://github.com/owner/repo`
    - `/unsubscribe owner/repo` 或 `/unsubscribe https://github.com/owner/repo`
@@ -250,6 +264,8 @@ docker compose restart
 
 当前项目更偏向 **单租户**：只会推送到一个 `TELEGRAM_CHAT_ID`，并共用一份订阅列表/状态。
 如果你想把它做成“任何人都能用”的公共 Bot（每个用户/群组都有自己的订阅与状态），需要额外实现多租户能力（按 chat 维度存订阅与 state，并做限流/权限控制）。
+
+这也意味着 `/start` 和 `/bind` 目前只能帮助你“发现 id + 引导配置”，并不能自动把机器人升级成真正的多用户公共 Bot，更不会为每个 chat 自动维护独立订阅。
 
 ### Docker Compose 项目版本对比（可选）
 

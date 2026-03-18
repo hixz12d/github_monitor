@@ -4,3 +4,4 @@ dist/
 data/*
 !data/.gitkeep
 .ace-tool/
+Cli/

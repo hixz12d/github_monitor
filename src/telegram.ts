@@ -29,6 +29,8 @@ export interface TelegramChat {
   type: string;
   username?: string;
   title?: string;
+  first_name?: string;
+  last_name?: string;
 }
 
 export interface TelegramMessage {
@@ -44,11 +46,22 @@ export interface TelegramCallbackQuery {
   message?: TelegramMessage;
 }
 
+export interface TelegramChatMember {
+  status?: string;
+}
+
+export interface TelegramChatMemberUpdated {
+  chat: TelegramChat;
+  old_chat_member?: TelegramChatMember;
+  new_chat_member?: TelegramChatMember;
+}
+
 export interface TelegramUpdate {
   update_id: number;
   message?: TelegramMessage;
   channel_post?: TelegramMessage;
   callback_query?: TelegramCallbackQuery;
+  my_chat_member?: TelegramChatMemberUpdated;
 }
 
 type TelegramApiResponse<T> =
@@ -160,7 +173,7 @@ export async function getUpdates(
   const payload: Record<string, unknown> = {
     offset,
     timeout: timeoutSec,
-    allowed_updates: ['message', 'channel_post', 'callback_query'],
+    allowed_updates: ['message', 'channel_post', 'callback_query', 'my_chat_member'],
   };
 
   const res = await callTelegramApi<TelegramUpdate[]>(botToken, 'getUpdates', payload);

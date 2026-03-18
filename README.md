@@ -105,6 +105,16 @@ All settings are configured via environment variables in the `.env` file:
 - If your target is a **public channel** with a username, just use `@channel_username`.
 - For **private channels / groups**, you usually need a numeric chat id (often starts with `-100`).
 
+You now have two ways to obtain it:
+
+1. Start the bot in **onboarding mode** with at least `TELEGRAM_BOT_TOKEN` configured.
+2. Send `/start` to the bot in a private chat, or add it to a group/channel and trigger an update.
+3. Read the discovered chat id from:
+   - the `/start` reply,
+   - `data/discovered_chats.json`,
+   - or container logs (`[TG] Discovered chat ...`).
+4. Send `/bind` in the current chat if you want ready-to-copy `TELEGRAM_CHAT_ID=...` and `TELEGRAM_ADMIN_CHAT_ID=...` lines.
+
 One simple way (PowerShell):
 
 1. Add your bot to the target group/channel and send a message.
@@ -116,6 +126,8 @@ Invoke-RestMethod "https://api.telegram.org/bot$token/getUpdates" | ConvertTo-Js
 ```
 
 Look for `result[].message.chat.id` (or `result[].channel_post.chat.id`), then set `TELEGRAM_CHAT_ID` to that value.
+
+> If `CRON`, `AI_API_KEY`, or `TELEGRAM_CHAT_ID` is missing, the daemon now falls back to **command/onboarding mode** instead of crashing immediately. In that mode, release monitoring is disabled, but Telegram command polling still works so you can use `/start` and `/bind` to finish setup.
 
 > `TARGET_LANG` controls both AI translation output and category labels (e.g. ✨ Features). Built-in label translations are available for `English`, `Chinese`, and `Japanese`. Other languages will use English labels with AI-translated content.
 >
@@ -235,6 +247,8 @@ docker compose restart
 
 1. Set `TELEGRAM_ADMIN_CHAT_ID` (recommended) to the chat id allowed to control the bot (numeric ID or `@username`).
 2. Send commands in that chat:
+   - `/start` to show current chat info and onboarding hints
+   - `/bind` to print ready-to-copy `TELEGRAM_CHAT_ID` and `TELEGRAM_ADMIN_CHAT_ID` lines for the current chat
    - `/list` to show all subscriptions with Unsubscribe buttons
    - `/subscribe owner/repo` or `/subscribe https://github.com/owner/repo`
    - `/unsubscribe owner/repo` or `/unsubscribe https://github.com/owner/repo`
@@ -251,6 +265,8 @@ Subscriptions are persisted to `data/subscriptions.json` (override via `SUBSCRIP
 
 This project is designed as a **single-tenant** bot: it pushes to one `TELEGRAM_CHAT_ID` and uses one subscription list/state.
 If you want to run a public bot that many users can use simultaneously (each with their own chat/subscriptions), you’ll need additional multi-tenant logic (per-chat subscriptions + per-chat state + rate limiting).
+
+This also means `/start` and `/bind` can help discover ids and guide setup, but they do **not** automatically switch the bot into full multi-user mode or maintain separate subscriptions per user/chat.
 
 ### Optional: Compare Compose Versions
 

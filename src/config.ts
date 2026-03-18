@@ -44,10 +44,10 @@ export function loadConfig(): AppConfig {
   return {
     githubToken: process.env.GITHUB_TOKEN || undefined,
     telegramBotToken: requiredEnv('TELEGRAM_BOT_TOKEN'),
-    telegramChatId: requiredEnv('TELEGRAM_CHAT_ID'),
+    telegramChatId: (process.env.TELEGRAM_CHAT_ID || '').trim(),
     aiProvider: provider,
     aiBaseUrl: process.env.AI_BASE_URL || undefined,
-    aiApiKey: requiredEnv('AI_API_KEY'),
+    aiApiKey: (process.env.AI_API_KEY || '').trim(),
     aiModel,
     cron,
     timezone,

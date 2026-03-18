@@ -12,8 +12,17 @@ import type { AppState, CategorizedRelease, Subscription, GitHubRelease } from '
 setupLogging();
 
 const config = loadConfig();
-const model = createAIClient(config);
 let running = true;
+let model: ReturnType<typeof createAIClient> | null = null;
+
+function getModel(): ReturnType<typeof createAIClient> {
+  if (!config.aiApiKey) {
+    throw new Error('Missing required env: AI_API_KEY. Required for release translation/categorization.');
+  }
+
+  model ??= createAIClient(config);
+  return model;
+}
 
 if (!config.githubToken) {
   console.info(
@@ -25,6 +34,7 @@ async function processReleaseRepo(
   repo: string,
   state: AppState,
 ): Promise<void> {
+  const aiModel = getModel();
   const result = await checkRepo(repo, config.githubToken, state);
   const now = new Date().toISOString();
 
@@ -47,7 +57,7 @@ async function processReleaseRepo(
 
   const categorized: CategorizedRelease[] = [];
   for (const release of result.newReleases) {
-    categorized.push(await categorizeRelease(model, release, config.timezone, config.targetLang));
+    categorized.push(await categorizeRelease(aiModel, release, config.timezone, config.targetLang));
   }
 
   const messages = splitMessages(repo, categorized, config.targetLang);
@@ -77,6 +87,7 @@ async function processTagRepo(
   repo: string,
   state: AppState,
 ): Promise<void> {
+  const aiModel = getModel();
   const key = `${repo}:tag`;
   const result = await checkRepoTags(repo, config.githubToken, state);
   const now = new Date().toISOString();
@@ -128,7 +139,7 @@ async function processTagRepo(
     };
 
     categorized.push(
-      await categorizeRelease(model, pseudoRelease, config.timezone, config.targetLang),
+      await categorizeRelease(aiModel, pseudoRelease, config.timezone, config.targetLang),
     );
   }
 
@@ -195,8 +206,26 @@ async function runCheck(): Promise<void> {
 }
 
 async function main(): Promise<void> {
-  if (!config.cron) {
-    throw new Error('Missing required env: CRON. Required for daemon mode.');
+  const missingMonitorEnv: string[] = [];
+  const cronTime = config.cron;
+  if (!cronTime) missingMonitorEnv.push('CRON');
+  if (!config.telegramChatId) missingMonitorEnv.push('TELEGRAM_CHAT_ID');
+  if (!config.aiApiKey) missingMonitorEnv.push('AI_API_KEY');
+
+  if (missingMonitorEnv.length > 0) {
+    console.warn(
+      `[Startup] Monitor mode disabled. Missing: ${missingMonitorEnv.join(', ')}.`,
+    );
+    console.warn(
+      '[Startup] Starting command/onboarding mode only. Use /start to discover chat ids, then fill the missing env vars and restart.',
+    );
+
+    await runTelegramCommandLoop(config, () => running);
+    return;
+  }
+
+  if (!cronTime) {
+    throw new Error('Invariant violation: CRON is required in monitor mode.');
   }
 
   console.log(
@@ -206,7 +235,7 @@ async function main(): Promise<void> {
   await runCheck();
 
   const job = CronJob.from({
-    cronTime: config.cron,
+    cronTime,
     timeZone: config.timezone,
     start: true,
     onTick: async () => {

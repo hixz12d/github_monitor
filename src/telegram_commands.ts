@@ -12,6 +12,7 @@ import {
   type TelegramChat,
   type TelegramUpdate,
 } from './telegram.js';
+import { rememberChat } from './chat_registry.js';
 import { loadTelegramBotState, saveTelegramBotState } from './telegram_state.js';
 import {
   loadSubscriptionsFile,
@@ -199,6 +200,134 @@ function parseCommand(textRaw: string): { cmd: string; args: string } | null {
   if (!cmdToken) return null;
 
   return { cmd: cmdToken, args: rest.join(' ') };
+}
+
+function formatChatLabel(chat: TelegramChat): string {
+  return chat.title
+    || chat.username
+    || [chat.first_name, chat.last_name].filter(Boolean).join(' ')
+    || '(unnamed)';
+}
+
+function buildAuthorizedCommandsText(): string {
+  return [
+    '<b>Commands</b>',
+    '<code>/start</code> Get current chat info',
+    '<code>/bind</code> Show ready-to-copy env lines',
+    '<code>/list</code>',
+    '<code>/subscribe owner/repo</code>',
+    '<code>/unsubscribe owner/repo</code>',
+    '<code>/check</code>',
+    '<code>/translate text</code>',
+    '<code>/aihealth</code>',
+    '<code>/status</code>',
+  ].join('\n');
+}
+
+async function handleStart(
+  config: AppConfig,
+  chat: TelegramChat,
+  args: string,
+  isAuthorizedChat: boolean,
+): Promise<void> {
+  const chatId = String(chat.id);
+  const payload = args.trim();
+  const label = escapeHtml(formatChatLabel(chat));
+  const lines = [
+    '<b>Bot Onboarding</b>',
+    `chat_id: <code>${escapeHtml(chatId)}</code>`,
+    `chat_type: <code>${escapeHtml(chat.type)}</code>`,
+    `chat_name: <code>${label}</code>`,
+  ];
+
+  if (chat.username) {
+    lines.push(`username: <code>@${escapeHtml(chat.username)}</code>`);
+  }
+
+  if (payload) {
+    lines.push(`start_payload: <code>${escapeHtml(payload)}</code>`);
+  }
+
+  lines.push('');
+  lines.push('Use this chat id for <code>TELEGRAM_CHAT_ID</code> or <code>TELEGRAM_ADMIN_CHAT_ID</code>.');
+  lines.push('Use <code>/bind</code> to print ready-to-copy env lines for this chat.');
+
+  if (chat.type === 'channel') {
+    lines.push('For channels, add the bot as admin and post once so it can discover <code>channel_post.chat.id</code>.');
+  } else if (chat.type === 'private') {
+    lines.push('Private chat ids come from <code>/start</code> or any direct message to the bot.');
+  } else {
+    lines.push('For groups, send <code>/start</code> or any message after adding the bot to discover the group id.');
+  }
+
+  lines.push('Discovered chats are persisted to <code>data/discovered_chats.json</code>.');
+
+  if (isAuthorizedChat) {
+    lines.push('');
+    lines.push(buildAuthorizedCommandsText());
+  } else {
+    lines.push('');
+    lines.push('This chat is not authorized for admin commands yet.');
+  }
+
+  await sendMessage(
+    config.telegramBotToken,
+    chatId,
+    lines.join('\n'),
+    { parse_mode: 'HTML', disable_web_page_preview: true },
+  );
+}
+
+async function handleBind(
+  config: AppConfig,
+  chat: TelegramChat,
+  isAuthorizedChat: boolean,
+  adminChatId: string,
+): Promise<void> {
+  const chatId = String(chat.id);
+  const label = escapeHtml(formatChatLabel(chat));
+  const lines = [
+    '<b>Binding Hint</b>',
+    `chat_id: <code>${escapeHtml(chatId)}</code>`,
+    `chat_type: <code>${escapeHtml(chat.type)}</code>`,
+    `chat_name: <code>${label}</code>`,
+  ];
+
+  if (chat.username) {
+    lines.push(`username: <code>@${escapeHtml(chat.username)}</code>`);
+  }
+
+  lines.push('');
+  lines.push('<b>Suggested .env</b>');
+  lines.push(`<code>TELEGRAM_CHAT_ID=${escapeHtml(chatId)}</code>`);
+  lines.push(`<code>TELEGRAM_ADMIN_CHAT_ID=${escapeHtml(chatId)}</code>`);
+  lines.push('');
+
+  if (!adminChatId) {
+    lines.push('No admin chat is configured yet. Set <code>TELEGRAM_ADMIN_CHAT_ID</code> to this value to enable admin commands here after restart.');
+  } else if (isAuthorizedChat) {
+    lines.push('This chat is already authorized for admin commands.');
+  } else {
+    lines.push('This chat is not the current admin chat. Setting <code>TELEGRAM_ADMIN_CHAT_ID</code> to this value will move admin control here after restart.');
+  }
+
+  if (chat.type === 'channel') {
+    lines.push('For channels, keep the bot as admin and make sure at least one post/update has exposed <code>channel_post.chat.id</code>.');
+  } else if (chat.type === 'private') {
+    lines.push('In private chats, this <code>chat_id</code> is the value you should use. Do not replace it with a separate user id.');
+  } else {
+    lines.push('For groups, use this group <code>chat_id</code> in the env file, not an individual member user id.');
+  }
+
+  lines.push('Update your <code>.env</code> and restart the bot or container to apply the change.');
+  lines.push('Discovered chats are persisted to <code>data/discovered_chats.json</code>.');
+
+  await sendMessage(
+    config.telegramBotToken,
+    chatId,
+    lines.join('\n'),
+    { parse_mode: 'HTML', disable_web_page_preview: true },
+  );
 }
 
 async function handleList(
@@ -600,10 +729,17 @@ async function handleUpdate(
 ): Promise<void> {
   const adminChatId = resolveAdminChatId(config);
 
+  if (update.my_chat_member) {
+    const membership = update.my_chat_member;
+    rememberChat(membership.chat, 'my_chat_member');
+    return;
+  }
+
   if (update.callback_query) {
     const query = update.callback_query;
     const chat = query.message?.chat;
     if (!chat) return;
+    rememberChat(chat, 'callback_query');
     if (!isAuthorized(chat, adminChatId)) return;
 
     if (query.data?.startsWith('unsub:')) {
@@ -616,11 +752,26 @@ async function handleUpdate(
   }
 
   const msg = update.message || update.channel_post;
-  if (!msg?.text) return;
-  if (!isAuthorized(msg.chat, adminChatId)) return;
+  if (!msg) return;
 
-  const parsed = parseCommand(msg.text);
-  if (!parsed) return;
+  const parsed = msg.text ? parseCommand(msg.text) : null;
+  const source = update.channel_post ? 'channel_post' : 'message';
+  const startPayload = parsed?.cmd === 'start' ? parsed.args.trim() || undefined : undefined;
+  rememberChat(msg.chat, source, parsed?.cmd, startPayload);
+  if (!msg.text || !parsed) return;
+
+  const authorized = isAuthorized(msg.chat, adminChatId);
+  if (parsed.cmd === 'start' || parsed.cmd === 'help') {
+    await handleStart(config, msg.chat, parsed.args, authorized);
+    return;
+  }
+
+  if (parsed.cmd === 'bind') {
+    await handleBind(config, msg.chat, authorized, adminChatId);
+    return;
+  }
+
+  if (!authorized) return;
 
   const chatId = String(msg.chat.id);
   switch (parsed.cmd) {
@@ -645,15 +796,6 @@ async function handleUpdate(
     case 'status':
       await handleStatusCmd(config, chatId, parsed.args);
       return;
-    case 'start':
-    case 'help':
-      await sendMessage(
-        config.telegramBotToken,
-        chatId,
-        '<b>Commands</b>\n<code>/list</code>\n<code>/subscribe owner/repo</code>\n<code>/unsubscribe owner/repo</code>\n<code>/check</code>\n<code>/translate text</code>\n<code>/aihealth</code>\n<code>/status</code>',
-        { parse_mode: 'HTML', disable_web_page_preview: true },
-      );
-      return;
     default:
       return;
   }
@@ -677,6 +819,8 @@ export async function runTelegramCommandLoop(
   await deleteWebhook(botToken, false);
 
   await setMyCommands(botToken, [
+    { command: 'start', description: 'Show chat id and onboarding help' },
+    { command: 'bind', description: 'Show ready-to-copy env lines for this chat' },
     { command: 'list', description: 'List subscriptions' },
     { command: 'subscribe', description: 'Subscribe repo (owner/repo or URL)' },
     { command: 'unsubscribe', description: 'Unsubscribe repo' },
