@@ -33,6 +33,13 @@ export interface TelegramChat {
   last_name?: string;
 }
 
+export interface TelegramUser {
+  id: number;
+  is_bot: boolean;
+  first_name: string;
+  username?: string;
+}
+
 export interface TelegramMessage {
   message_id: number;
   chat: TelegramChat;
@@ -210,4 +217,10 @@ export async function setMyCommands(
   };
   const res = await callTelegramApi<boolean>(botToken, 'setMyCommands', payload);
   return Boolean(res?.ok);
+}
+
+export async function getMe(
+  botToken: string,
+): Promise<TelegramApiResponse<TelegramUser> | null> {
+  return await callTelegramApi<TelegramUser>(botToken, 'getMe', {});
 }

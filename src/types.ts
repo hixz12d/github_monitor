@@ -1,4 +1,4 @@
-export type SubscribeMode = 'release' | 'tag';
+export type SubscribeMode = 'release' | 'tag' | 'commit' | 'pr-merge';
 
 export interface Subscription {
   repo: string;
@@ -29,6 +29,24 @@ export interface GitHubCompareCommit {
   html_url: string;
 }
 
+export interface GitHubCommitSimple {
+  sha: string;
+  commit: {
+    message: string;
+    author: { name: string; date: string } | null;
+  };
+  html_url: string;
+}
+
+export interface GitHubPullRequest {
+  number: number;
+  title: string;
+  html_url: string;
+  user: { login: string } | null;
+  merged_at: string | null;
+  merge_commit_sha: string | null;
+}
+
 export interface CheckResult {
   repo: string;
   newReleases: GitHubRelease[];
@@ -41,11 +59,29 @@ export interface TagCheckResult {
   etag: string | null;
 }
 
+export interface CommitCheckResult {
+  repo: string;
+  newCommits: GitHubCommitSimple[];
+  etag: string | null;
+  latestCommit?: GitHubCommitSimple | null;
+}
+
+export interface PrMergeCheckResult {
+  repo: string;
+  newPrs: GitHubPullRequest[];
+  etag: string | null;
+  latestMergedPr?: GitHubPullRequest | null;
+}
+
 export interface RepoState {
   lastRelease?: string;
   lastReleaseDate?: string;
   lastTag?: string;
   lastTagDate?: string;
+  lastCommitSha?: string;
+  lastCommitDate?: string;
+  lastMergedPrNumber?: number;
+  lastMergedPrDate?: string;
   etag: string | null;
   lastCheck: string;
 }

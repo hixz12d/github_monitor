@@ -1,10 +1,24 @@
 import 'dotenv/config';
 import { CronJob } from 'cron';
 import { loadConfig, loadSubscriptions } from './config.js';
-import { loadState, saveState, checkRepo, checkRepoTags, getCompareCommits, getTagCommits, getCommitDate } from './github.js';
+import {
+  loadState,
+  saveState,
+  checkRepo,
+  checkRepoTags,
+  checkRepoCommits,
+  checkRepoPrMerges,
+  getCompareCommits,
+  getTagCommits,
+  getCommitDate,
+} from './github.js';
 import { createAIClient, categorizeRelease } from './ai.js';
-import { splitMessages } from './formatter.js';
-import { sendMessage } from './telegram.js';
+import {
+  splitMessages,
+  formatCommitMessages,
+  formatPrMergeMessages,
+} from './formatter.js';
+import { getMe, sendMessage } from './telegram.js';
 import { runTelegramCommandLoop } from './telegram_commands.js';
 import { setupLogging } from './logger.js';
 import type { AppState, CategorizedRelease, Subscription, GitHubRelease } from './types.js';
@@ -14,6 +28,10 @@ setupLogging();
 const config = loadConfig();
 let running = true;
 let model: ReturnType<typeof createAIClient> | null = null;
+
+function subscriptionNeedsAi(sub: Subscription): boolean {
+  return sub.mode === 'release' || sub.mode === 'tag';
+}
 
 function getModel(): ReturnType<typeof createAIClient> {
   if (!config.aiApiKey) {
@@ -168,14 +186,123 @@ async function processTagRepo(
   console.log(`[${repo}:tag] Notified, latest: ${state[key].lastTag}`);
 }
 
+async function processCommitRepo(
+  repo: string,
+  state: AppState,
+): Promise<void> {
+  const key = `${repo}:commit`;
+  const result = await checkRepoCommits(repo, config.githubToken, state);
+  const now = new Date().toISOString();
+
+  if (result.newCommits.length === 0) {
+    console.log(`[${repo}:commit] No new commits`);
+    if (result.etag && result.etag !== state[key]?.etag) {
+      state[key] = {
+        lastCommitSha: state[key]?.lastCommitSha,
+        lastCommitDate: state[key]?.lastCommitDate,
+        etag: result.etag,
+        lastCheck: now,
+      };
+    }
+    return;
+  }
+
+  console.log(
+    `[${repo}:commit] Found ${result.newCommits.length} new commit(s)`,
+  );
+
+  const messages = formatCommitMessages(repo, result.newCommits);
+  for (const msg of messages) {
+    const ok = await sendMessage(
+      config.telegramBotToken,
+      config.telegramChatId,
+      msg,
+    );
+    if (!ok) {
+      console.error(`[${repo}:commit] Failed to send Telegram message`);
+      return;
+    }
+  }
+
+  const latest = result.newCommits[0] ?? result.latestCommit;
+  if (!latest) return;
+
+  state[key] = {
+    lastCommitSha: latest.sha,
+    lastCommitDate: latest.commit.author?.date ?? now,
+    etag: result.etag,
+    lastCheck: now,
+  };
+  console.log(`[${repo}:commit] Notified, latest: ${latest.sha.slice(0, 7)}`);
+}
+
+async function processPrMergeRepo(
+  repo: string,
+  state: AppState,
+): Promise<void> {
+  const key = `${repo}:pr-merge`;
+  const result = await checkRepoPrMerges(repo, config.githubToken, state);
+  const now = new Date().toISOString();
+
+  if (result.newPrs.length === 0) {
+    console.log(`[${repo}:pr-merge] No new merged PRs`);
+    if (result.etag && result.etag !== state[key]?.etag) {
+      state[key] = {
+        lastMergedPrNumber: state[key]?.lastMergedPrNumber,
+        lastMergedPrDate: state[key]?.lastMergedPrDate,
+        etag: result.etag,
+        lastCheck: now,
+      };
+    }
+    return;
+  }
+
+  console.log(
+    `[${repo}:pr-merge] Found ${result.newPrs.length} new merged PR(s)`,
+  );
+
+  const messages = formatPrMergeMessages(repo, result.newPrs);
+  for (const msg of messages) {
+    const ok = await sendMessage(
+      config.telegramBotToken,
+      config.telegramChatId,
+      msg,
+    );
+    if (!ok) {
+      console.error(`[${repo}:pr-merge] Failed to send Telegram message`);
+      return;
+    }
+  }
+
+  const latest = result.newPrs[0] ?? result.latestMergedPr;
+  if (!latest) return;
+
+  state[key] = {
+    lastMergedPrNumber: latest.number,
+    lastMergedPrDate: latest.merged_at ?? now,
+    etag: result.etag,
+    lastCheck: now,
+  };
+  console.log(`[${repo}:pr-merge] Notified, latest: #${latest.number}`);
+}
+
 async function processRepo(
   sub: Subscription,
   state: AppState,
 ): Promise<void> {
-  if (sub.mode === 'tag') {
-    await processTagRepo(sub.repo, state);
-  } else {
-    await processReleaseRepo(sub.repo, state);
+  switch (sub.mode) {
+    case 'tag':
+      await processTagRepo(sub.repo, state);
+      return;
+    case 'commit':
+      await processCommitRepo(sub.repo, state);
+      return;
+    case 'pr-merge':
+      await processPrMergeRepo(sub.repo, state);
+      return;
+    default:
+      await processReleaseRepo(sub.repo, state);
+      return;
   }
 }
 
@@ -206,11 +333,25 @@ async function runCheck(): Promise<void> {
 }
 
 async function main(): Promise<void> {
+  const me = await getMe(config.telegramBotToken);
+  if (!me?.ok) {
+    console.error(
+      '[Startup] Telegram Bot Token validation failed. Most common cause: TELEGRAM_BOT_TOKEN is incorrect or has been revoked by @BotFather.',
+    );
+    return;
+  }
+
+  console.log(
+    `[Startup] Telegram bot verified: @${me.result.username || me.result.first_name} (${me.result.id})`,
+  );
+
   const missingMonitorEnv: string[] = [];
   const cronTime = config.cron;
+  const startupSubs = loadSubscriptions();
+  const aiRequired = startupSubs.some(subscriptionNeedsAi);
   if (!cronTime) missingMonitorEnv.push('CRON');
   if (!config.telegramChatId) missingMonitorEnv.push('TELEGRAM_CHAT_ID');
-  if (!config.aiApiKey) missingMonitorEnv.push('AI_API_KEY');
+  if (aiRequired && !config.aiApiKey) missingMonitorEnv.push('AI_API_KEY');
 
   if (missingMonitorEnv.length > 0) {
     console.warn(
@@ -229,7 +370,7 @@ async function main(): Promise<void> {
   }
 
   console.log(
-    `Started. Provider: ${config.aiProvider}, Model: ${config.aiModel}, Lang: ${config.targetLang}, Timezone: ${config.timezone}, Cron: ${config.cron}`,
+    `Started. Provider: ${config.aiProvider}, Model: ${config.aiModel}, AI configured: ${config.aiApiKey ? 'yes' : 'no'}, Lang: ${config.targetLang}, Timezone: ${config.timezone}, Cron: ${config.cron}`,
   );
 
   await runCheck();

@@ -158,14 +158,26 @@ function saveCurrentSubscriptions(subs: Subscription[]): void {
   saveSubscriptionsFile(subs);
 }
 
+const MODE_CYCLE: Subscription['mode'][] = ['release', 'tag', 'commit', 'pr-merge'];
+
+function getModeLabel(mode: Subscription['mode']): string {
+  return mode;
+}
+
+function getNextMode(mode: Subscription['mode']): Subscription['mode'] {
+  const idx = MODE_CYCLE.indexOf(mode);
+  return MODE_CYCLE[(idx + 1) % MODE_CYCLE.length]!;
+}
+
 function buildSubscriptionsListMessage(
   subs: Subscription[],
 ): { text: string; reply_markup?: InlineKeyboardMarkup } {
   const header = `<b>Subscriptions (${subs.length})</b>`;
-  const text = `${header}\n\nClick the button below to unsubscribe:`;
+  const text = `${header}\n\nClick the mode button to switch modes, or unsubscribe below:`;
 
   const inline_keyboard = subs.map((s) => ([
     { text: s.repo, url: `https://github.com/${s.repo}` },
+    { text: getModeLabel(s.mode), callback_data: `mode:${subscriptionKey(s.repo)}` },
     { text: 'Unsubscribe', callback_data: `unsub:${subscriptionKey(s.repo)}` },
   ]));
 
@@ -177,12 +189,19 @@ async function getLatestVersionText(
   githubToken: string | undefined,
 ): Promise<string | null> {
   try {
-    if (sub.mode === 'tag') {
-      return await getLatestTagName(sub.repo, githubToken);
+    switch (sub.mode) {
+      case 'tag':
+        return await getLatestTagName(sub.repo, githubToken);
+      case 'commit':
+        return 'commit monitoring enabled';
+      case 'pr-merge':
+        return 'pr-merge monitoring enabled';
+      default: {
+        const latestRelease = await getLatestReleaseTag(sub.repo, githubToken);
+        if (latestRelease) return latestRelease;
+        return await getLatestTagName(sub.repo, githubToken);
+      }
     }
-    const latestRelease = await getLatestReleaseTag(sub.repo, githubToken);
-    if (latestRelease) return latestRelease;
-    return await getLatestTagName(sub.repo, githubToken);
   } catch (e) {
     console.error(`[Cmd] /check failed for ${sub.repo}:${sub.mode}`, e);
     return null;
@@ -214,13 +233,22 @@ function buildAuthorizedCommandsText(): string {
     '<b>Commands</b>',
     '<code>/start</code> Get current chat info',
     '<code>/bind</code> Show ready-to-copy env lines',
-    '<code>/list</code>',
-    '<code>/subscribe owner/repo</code>',
+    '<code>/list</code> List subscriptions and switch modes inline',
+    '<code>/subscribe owner/repo[:release|tag|commit|pr-merge]</code>',
     '<code>/unsubscribe owner/repo</code>',
     '<code>/check</code>',
     '<code>/translate text</code>',
     '<code>/aihealth</code>',
     '<code>/status</code>',
+  ].join('\n');
+}
+
+function buildUnauthorizedCommandText(chatId: string): string {
+  return [
+    'This command is only available in the admin chat.',
+    '',
+    `Your chat id: <code>${escapeHtml(chatId)}</code>`,
+    `To authorize this chat, set TELEGRAM_ADMIN_CHAT_ID=${escapeHtml(chatId)} in your .env and restart.`,
   ].join('\n');
 }
 
@@ -261,6 +289,8 @@ async function handleStart(
   }
 
   lines.push('Discovered chats are persisted to <code>data/discovered_chats.json</code>.');
+  lines.push('');
+  lines.push('⚠️ This bot maintains one shared subscription list and pushes to one target chat. It does not create per-chat independent subscriptions.');
 
   if (isAuthorizedChat) {
     lines.push('');
@@ -319,6 +349,12 @@ async function handleBind(
     lines.push('For groups, use this group <code>chat_id</code> in the env file, not an individual member user id.');
   }
 
+  lines.push('');
+  lines.push('<b>To enable release monitoring, also configure:</b>');
+  lines.push('• <code>AI_API_KEY</code> — for translation/categorization');
+  lines.push('• <code>CRON</code> — polling schedule (Docker/local only)');
+  lines.push('• <code>SUBSCRIBE_REPOS</code> — repos to monitor');
+  lines.push('');
   lines.push('Update your <code>.env</code> and restart the bot or container to apply the change.');
   lines.push('Discovered chats are persisted to <code>data/discovered_chats.json</code>.');
 
@@ -363,7 +399,7 @@ async function handleSubscribe(
     await sendMessage(
       botToken,
       chatId,
-      'Usage:\n<code>/subscribe owner/repo</code>\n<code>/subscribe https://github.com/owner/repo</code>\nOptional: <code>:tag</code> or <code>:release</code>',
+      'Usage:\n<code>/subscribe owner/repo</code>\n<code>/subscribe https://github.com/owner/repo</code>\nOptional: <code>:release</code>, <code>:tag</code>, <code>:commit</code>, or <code>:pr-merge</code>',
       { parse_mode: 'HTML', disable_web_page_preview: true },
     );
     return;
@@ -374,7 +410,7 @@ async function handleSubscribe(
   const next = upsertSubscription(current, sub);
   saveCurrentSubscriptions(next);
 
-  const modeText = sub.mode === 'tag' ? 'tag' : 'release';
+  const modeText = getModeLabel(sub.mode);
   await sendMessage(
     botToken,
     chatId,
@@ -543,7 +579,7 @@ async function handleAiHealth(
   if (!baseUrl) {
     const text = verbose
       ? `<b>AI Health</b>\nprovider: <code>${escapeHtml(provider)}</code>\nmodel: <code>${escapeHtml(config.aiModel)}</code>\nbase: <code>(sdk default)</code>`
-      : 'base url not set';
+      : 'AI_BASE_URL is not set. If you use the official OpenAI / Google / Anthropic API directly, this is normal — the SDK uses its default endpoint.\n\nTo verify your full AI pipeline, try: /translate hello';
     await sendMessage(config.telegramBotToken, chatId, text, { parse_mode: 'HTML', disable_web_page_preview: true });
     return;
   }
@@ -551,7 +587,7 @@ async function handleAiHealth(
   if (provider !== 'openai-completions' && provider !== 'openai-responses') {
     const text = verbose
       ? `<b>AI Health</b>\nprovider: <code>${escapeHtml(provider)}</code>\nmodel: <code>${escapeHtml(config.aiModel)}</code>\nbase: <code>${escapeHtml(baseUrl)}</code>\n\nPing is only implemented for OpenAI-compatible base URLs.\nUse <code>/translate</code> to validate the configured provider.`
-      : 'unsupported provider';
+      : 'AI health ping only supports openai-completions and openai-responses with an OpenAI-compatible AI_BASE_URL. For google and anthropic providers, use /translate hello to verify the end-to-end pipeline instead.';
     await sendMessage(config.telegramBotToken, chatId, text, { parse_mode: 'HTML', disable_web_page_preview: true });
     return;
   }
@@ -723,6 +759,41 @@ async function handleCallbackUnsubscribe(
   );
 }
 
+async function handleCallbackModeSwitch(
+  query: TelegramCallbackQuery,
+  botToken: string,
+): Promise<void> {
+  const msg = query.message;
+  const data = query.data;
+  if (!msg || !data) return;
+
+  const prefix = 'mode:';
+  if (!data.startsWith(prefix)) return;
+  const key = data.slice(prefix.length);
+
+  const current = loadCurrentSubscriptions();
+  const target = current.find((s) => subscriptionKey(s.repo) === key);
+  if (!target) {
+    await answerCallbackQuery(botToken, query.id, 'Not found');
+    return;
+  }
+
+  const nextMode = getNextMode(target.mode);
+  const next = upsertSubscription(current, { ...target, mode: nextMode });
+  saveCurrentSubscriptions(next);
+
+  await answerCallbackQuery(botToken, query.id, `Mode: ${nextMode}`);
+
+  const payload = buildSubscriptionsListMessage(next);
+  await editMessageText(
+    botToken,
+    String(msg.chat.id),
+    msg.message_id,
+    payload.text,
+    { parse_mode: 'HTML', reply_markup: payload.reply_markup, disable_web_page_preview: true },
+  );
+}
+
 async function handleUpdate(
   update: TelegramUpdate,
   config: AppConfig,
@@ -740,10 +811,29 @@ async function handleUpdate(
     const chat = query.message?.chat;
     if (!chat) return;
     rememberChat(chat, 'callback_query');
-    if (!isAuthorized(chat, adminChatId)) return;
+    if (!isAuthorized(chat, adminChatId)) {
+      await answerCallbackQuery(
+        config.telegramBotToken,
+        query.id,
+        'Admin chat only. Use /start to get this chat id.',
+        true,
+      );
+      await sendMessage(
+        config.telegramBotToken,
+        String(chat.id),
+        buildUnauthorizedCommandText(String(chat.id)),
+        { parse_mode: 'HTML', disable_web_page_preview: true },
+      );
+      return;
+    }
 
     if (query.data?.startsWith('unsub:')) {
       await handleCallbackUnsubscribe(query, config.telegramBotToken);
+      return;
+    }
+
+    if (query.data?.startsWith('mode:')) {
+      await handleCallbackModeSwitch(query, config.telegramBotToken);
       return;
     }
 
@@ -771,7 +861,15 @@ async function handleUpdate(
     return;
   }
 
-  if (!authorized) return;
+  if (!authorized) {
+    await sendMessage(
+      config.telegramBotToken,
+      String(msg.chat.id),
+      buildUnauthorizedCommandText(String(msg.chat.id)),
+      { parse_mode: 'HTML', disable_web_page_preview: true },
+    );
+    return;
+  }
 
   const chatId = String(msg.chat.id);
   switch (parsed.cmd) {
@@ -821,8 +919,8 @@ export async function runTelegramCommandLoop(
   await setMyCommands(botToken, [
     { command: 'start', description: 'Show chat id and onboarding help' },
     { command: 'bind', description: 'Show ready-to-copy env lines for this chat' },
-    { command: 'list', description: 'List subscriptions' },
-    { command: 'subscribe', description: 'Subscribe repo (owner/repo or URL)' },
+    { command: 'list', description: 'List subscriptions and switch modes' },
+    { command: 'subscribe', description: 'Subscribe repo (release/tag/commit/pr-merge)' },
     { command: 'unsubscribe', description: 'Unsubscribe repo' },
     { command: 'check', description: 'Show latest versions' },
     { command: 'translate', description: 'Translate text to TARGET_LANG' },

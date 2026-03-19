@@ -7,11 +7,14 @@
 
 订阅 GitHub 仓库的 Release，通过 AI 自动将更新日志翻译并分类，推送到 Telegram 频道/群组。
 
+> ⚠️ **单租户、自托管 Bot。** 本 Bot 只推送到一个 Telegram chat，维护一份共享订阅列表，不是公共多用户服务。详见[多人共用说明](#多人共用说明)。
+
 ## 功能特性
 
 - 定时轮询 GitHub Release（支持 ETag 缓存，节省 API 配额）
 - 持久化运行状态，避免重复推送（`data/state.json`，GitHub Actions 会缓存）
 - 支持 Tag 订阅模式（适用于没有 Release 的项目）
+- 支持 commit 与 pr-merge 订阅模式，发送简要摘要通知
 - AI 自动翻译 + 分类（新功能、修复、优化、重构、文档、其他）
 - 支持多种 AI 提供商：OpenAI / Google Gemini / Anthropic Claude
 - 翻译目标语言可配置（默认英文）
@@ -19,20 +22,77 @@
 - 发送失败自动重试（最多 3 次）
 - 支持 Telegram 指令管理订阅（守护进程模式，可选）
 - 可选 `/status` 指令：对比本机 Docker Compose 版本与 GitHub 最新版本（需要 Docker socket）
-- 支持 Docker Compose 或 GitHub Actions 部署（无需服务器）
+- 支持 Docker Compose、本地 Node.js 或 GitHub Actions 部署
+
+### 第 0 步：获取 Telegram Chat ID
+
+如果你还没有 `TELEGRAM_CHAT_ID`：
+
+1. 通过 [@BotFather](https://t.me/BotFather) 创建一个 Bot，并复制 token
+2. 在 `.env` 中只设置 `TELEGRAM_BOT_TOKEN`（其他字段先留空）
+3. 运行 `docker compose up -d --build`（或 `npm start`）
+4. 在 Telegram 里给你的 Bot 发送 `/start`，从回复里复制 `chat_id`
+5. 如需可直接复制的 `.env` 配置行，可再发送 `/bind`
+
+当缺少 `TELEGRAM_CHAT_ID` 或 `CRON`，或者在使用 `release` / `tag` 订阅时缺少 `AI_API_KEY` 时，Bot 会以 **onboarding 模式** 运行：不会执行监控，但 Telegram 命令可用，方便你完成配置。
 
 ## 快速开始
 
 ### 前置准备
 
 1. **Telegram Bot** — 通过 [@BotFather](https://t.me/BotFather) 创建 Bot，获取 Token
-2. **Telegram Chat ID** — 频道用户名（如 `@my_channel`）或群组/个人数字 ID
-3. **AI API Key** — 任选一个 AI 提供商的 API Key
-4. **GitHub Token**（可选）— [创建 Personal Access Token](https://github.com/settings/tokens)，可提高 API 频率限制。订阅仓库多或轮询频率高时建议配置
+2. **AI API Key** — 任选一个 AI 提供商的 API Key
+3. **GitHub Token**（可选）— [创建 Personal Access Token](https://github.com/settings/tokens)，可提高 API 频率限制。订阅仓库多或轮询频率高时建议配置
 
-### 方式一：GitHub Actions（推荐）
+> 对大多数用户，推荐先用 Docker Compose 或 `npm start`。这两种模式支持 `/start`、`/bind` 等 onboarding 命令，方便你先拿到 `TELEGRAM_CHAT_ID`、验证 AI 配置，再决定是否迁移到 GitHub Actions。
 
-无需服务器，Fork 后配置即可：
+### 方式一：Docker Compose（推荐）
+
+```bash
+git clone https://github.com/<你的用户名>/<你的仓库>.git
+cd <你的仓库>
+
+cp .env.example .env
+# 编辑 .env 填入你的配置（或首次仅设置 TELEGRAM_BOT_TOKEN 进入 onboarding）
+
+docker compose up -d --build
+
+# 查看日志
+docker compose logs -f
+
+# 停止
+docker compose down
+```
+
+> 最适合自托管常驻运行：支持 onboarding 模式、Telegram 指令管理，以及内置 CRON 调度。
+
+> 本项目不提供 HTTP 服务，不需要对外暴露端口。运行后会通过 Telegram API 主动推送消息，并使用 Telegram 的 long polling 接收指令（如启用）。
+
+### 方式二：本地 `npm start`
+
+```bash
+git clone https://github.com/<你的用户名>/<你的仓库>.git
+cd <你的仓库>
+
+npm install
+cp .env.example .env
+# 编辑 .env 填入你的配置（或首次仅设置 TELEGRAM_BOT_TOKEN 进入 onboarding）
+
+npm start
+```
+
+如果你在本地开发并希望文件改动自动重启：
+
+```bash
+npm run dev
+```
+
+### 方式三：GitHub Actions（可选）
+
+建议在 onboarding 完成、并且你已经确认 `TELEGRAM_CHAT_ID` 之后再使用。
+GitHub Actions 是单次运行模式，不能接收 `/start`、`/bind`、`/subscribe`、`/list` 这类 Telegram 命令。
+
+无需常驻服务器，Fork 后配置即可：
 
 1. Fork 本仓库（或用 Template / 基于本项目新建你自己的仓库）
 2. 进入 **Settings → Secrets and variables → Actions**
@@ -54,47 +114,29 @@
 
 > GitHub Actions 自动提供内置 `GITHUB_TOKEN`（1000 次/小时），无需额外配置。
 
-### 方式二：Docker Compose
-
-```bash
-git clone https://github.com/<你的用户名>/<你的仓库>.git
-cd <你的仓库>
-
-cp .env.example .env
-# 编辑 .env 填入你的配置（见下方配置说明）
-
-docker compose up -d --build
-
-# 查看日志
-docker compose logs -f
-
-# 停止
-docker compose down
-```
-
-> 本项目不提供 HTTP 服务，不需要对外暴露端口。运行后会通过 Telegram API 主动推送消息，并使用 Telegram 的 long polling 接收指令（如启用）。
-
 ## 配置说明
 
 所有配置通过环境变量设置，在 `.env` 文件中填写：
 
 | 变量                 | 必填 | 默认值               | 说明                                             |
 | -------------------- | ---- | -------------------- | ------------------------------------------------ |
-| `SUBSCRIBE_REPOS`    | ⚠️   | —                    | 逗号分隔的订阅仓库列表（如 `vuejs/core,nodejs/node`）。如果没有订阅文件则必填 |
+| `SUBSCRIBE_REPOS`    | ⚠️ 监控模式 | —             | 逗号分隔的订阅仓库列表（如 `vuejs/core,nodejs/node`）。如果没有订阅文件则必填 |
 | `SUBSCRIPTIONS_PATH` | ❌   | `data/subscriptions.json` | 订阅文件路径（文件存在时优先级高于 `SUBSCRIBE_REPOS`） |
-| `TELEGRAM_BOT_TOKEN` | ✅   | —                    | Telegram Bot Token                               |
-| `TELEGRAM_CHAT_ID`   | ✅   | —                    | 目标频道/群组/用户 ID                            |
+| `TELEGRAM_BOT_TOKEN` | ✅ 始终必填 | —             | Telegram Bot Token                               |
+| `TELEGRAM_CHAT_ID`   | ⚠️ 监控模式 | —            | 目标频道/群组/用户 ID                            |
 | `TELEGRAM_ADMIN_CHAT_ID` | ❌ | `TELEGRAM_CHAT_ID`   | 允许控制机器人的 admin chat（数字 ID 或 `@username`） |
 | `TELEGRAM_COMMANDS`  | ❌   | `1`                  | 守护进程模式下是否启用 Telegram 指令循环（`0`/`false` 关闭） |
-| `AI_API_KEY`         | ✅   | —                    | AI 服务 API Key                                  |
+| `AI_API_KEY`         | ⚠️ 监控模式 | —            | AI 服务 API Key。`release` / `tag` 监控必需；仅用 `commit` / `pr-merge` 时可不填 |
 | `AI_MODEL`           | ❌   | `gpt-4o-mini`        | 模型名称                                         |
 | `AI_PROVIDER`        | ❌   | `openai-completions` | AI 提供商（见下方）                              |
 | `AI_BASE_URL`        | ❌   | 各 SDK 默认值        | 自定义 API 地址（代理/自部署）                   |
 | `GITHUB_TOKEN`       | ❌   | —                    | GitHub PAT，提高 API 频率限制（5000 次/小时 vs 60 次/小时） |
 | `TIMEZONE`           | ❌   | `Asia/Shanghai`      | 全局时区（IANA），用于 cron 调度和消息时间格式化 |
-| `CRON`               | ❌   | —                    | Cron 表达式（6 字段，含秒）。Docker/本地模式必填 |
+| `CRON`               | ⚠️ 监控模式 | —            | Cron 表达式（6 字段，含秒）。仅 Docker/本地监控模式必填 |
 | `TARGET_LANG`        | ❌   | `English`            | AI 翻译目标语言                                  |
 | `DOCKER_SOCKET_PATH` | ❌   | `/var/run/docker.sock` | Docker Engine socket 路径（仅 `/status` 使用） |
+
+✅ 始终必填 | ⚠️ 监控模式必需 | ❌ 可选
 
 > 订阅配置二选一：
 > - 用 `SUBSCRIBE_REPOS`，或
@@ -127,7 +169,7 @@ Invoke-RestMethod "https://api.telegram.org/bot$token/getUpdates" | ConvertTo-Js
 
 在输出里找到 `result[].message.chat.id`（或 `result[].channel_post.chat.id`），然后把该数字填到 `TELEGRAM_CHAT_ID`。
 
-> 如果缺少 `CRON`、`AI_API_KEY` 或 `TELEGRAM_CHAT_ID`，守护进程现在会退化为 **命令/onboarding 模式**，而不是启动即退出。在这个模式下不会执行 Release 监控，但 Telegram 指令轮询仍可工作，你可以先用 `/start` 和 `/bind` 完成首次接入。
+> 如果缺少 `CRON` 或 `TELEGRAM_CHAT_ID`，或者在使用 `release` / `tag` 订阅时缺少 `AI_API_KEY`，守护进程现在会退化为 **命令/onboarding 模式**，而不是启动即退出。在这个模式下不会执行监控，但 Telegram 指令轮询仍可工作，你可以先用 `/start` 和 `/bind` 完成首次接入。
 
 > `TARGET_LANG` 同时控制 AI 翻译输出和分类标签（如 ✨ 新功能）。内置标签翻译支持`English`、`Chinese`和`Japanese`，其他语言将使用英文标签配合 AI 翻译内容。
 >
@@ -159,6 +201,8 @@ AI_MODEL=gpt-4o-mini
 TIMEZONE=Asia/Shanghai
 CRON=0 */10 9-23 * * *
 TARGET_LANG=Chinese
+# 示例：vuejs/core,nodejs/node,some-org/lib:tag
+SUBSCRIBE_REPOS=
 ```
 
 ### 定时调度（Cron）
@@ -185,7 +229,8 @@ CRON=0 */10 9-23 * * *
 通过 `SUBSCRIBE_REPOS` 环境变量设置订阅的 GitHub 仓库（`owner/repo` 格式，逗号分隔）：
 
 ```env
-SUBSCRIBE_REPOS=vuejs/core,nodejs/node,microsoft/vscode
+# 示例：vuejs/core,nodejs/node,some-org/lib:tag
+SUBSCRIBE_REPOS=
 ```
 
 每一项也支持 GitHub URL / SSH URL（内部会自动标准化为 `owner/repo`）：
@@ -218,18 +263,22 @@ SUBSCRIBE_REPOS=vuejs/core,nodejs/node,microsoft/vscode
 | `owner/repo` | `release` | 订阅 GitHub Release（默认） |
 | `owner/repo:release` | `release` | 显式订阅 Release |
 | `owner/repo:tag` | `tag` | 订阅新 Git Tag（适用于没有 Release 的项目） |
+| `owner/repo:commit` | `commit` | 订阅默认分支上的新 commits |
+| `owner/repo:pr-merge` | `pr-merge` | 订阅新合并的 Pull Requests |
 
 示例：
 
 ```env
-SUBSCRIBE_REPOS=vuejs/core,some-org/lib:tag,another/tool:release
+SUBSCRIBE_REPOS=vuejs/core,some-org/lib:tag,another/tool:commit,team/app:pr-merge
 ```
 
 - `vuejs/core` — 监听 Release（默认）
 - `some-org/lib:tag` — 监听新 Git Tag，根据两个 Tag 之间的 commits 生成更新日志
-- `another/tool:release` — 显式监听 Release
+- `another/tool:commit` — 监听默认分支上的新 commits
+- `team/app:pr-merge` — 监听新合并的 Pull Requests
 
 **Tag 模式**下，Bot 会获取前后两个 Tag 之间的 commits（最多 50 条），交给 AI 分类翻译，推送格式与 Release 通知一致。
+**commit** 和 **pr-merge** 模式下，Bot 只发送“标题 + 链接”的简要摘要，不走 AI 翻译/分类。
 
 GitHub Actions 模式下，在仓库 Settings 中设置为 **Variable**。
 Docker/本地模式下，添加到 `.env` 文件中。
@@ -248,8 +297,8 @@ docker compose restart
 2. 运行后，在该 chat 中发送指令：
    - `/start`：显示当前 chat 信息，并给出首次接入提示
    - `/bind`：输出当前 chat 可直接复制的 `TELEGRAM_CHAT_ID` / `TELEGRAM_ADMIN_CHAT_ID` 配置行
-   - `/list`：列出所有订阅，并提供 Unsubscribe 按钮
-   - `/subscribe owner/repo` 或 `/subscribe https://github.com/owner/repo`
+   - `/list`：列出所有订阅，并提供模式切换和 Unsubscribe 按钮
+   - `/subscribe owner/repo`、`/subscribe owner/repo:tag`、`/subscribe owner/repo:commit`、`/subscribe owner/repo:pr-merge`，或 `/subscribe https://github.com/owner/repo`
    - `/unsubscribe owner/repo` 或 `/unsubscribe https://github.com/owner/repo`
    - `/check`：检查订阅仓库最新版本（尽量简短输出）
    - `/check owner/repo`：检查指定仓库最新版本

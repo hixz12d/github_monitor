@@ -10,7 +10,7 @@ export const DEFAULT_SUBSCRIPTIONS_PATH = resolve(
   'subscriptions.json',
 );
 
-const VALID_MODES = new Set<SubscribeMode>(['release', 'tag']);
+const VALID_MODES = new Set<SubscribeMode>(['release', 'tag', 'commit', 'pr-merge']);
 const REPO_PART_RE = /^[A-Za-z0-9_.-]+$/;
 
 export function subscriptionKey(repo: string): string {
@@ -32,7 +32,8 @@ export function parseSubscriptionsEnv(envRepos: string): Subscription[] {
     .filter(Boolean);
 
   if (entries.length === 0) {
-    throw new Error('SUBSCRIBE_REPOS is empty. Add at least one repo.');
+    console.info('[Subs] SUBSCRIBE_REPOS is empty. No default subscriptions loaded from env.');
+    return [];
   }
 
   const subs: Subscription[] = [];
@@ -54,7 +55,7 @@ export function parseSubscriptionsEnv(envRepos: string): Subscription[] {
 
 export function tryLoadSubscriptionsFromEnv(): Subscription[] {
   const envRepos = process.env.SUBSCRIBE_REPOS;
-  if (!envRepos) return [];
+  if (envRepos == null) return [];
   return parseSubscriptionsEnv(envRepos);
 }
 

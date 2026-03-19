@@ -7,11 +7,14 @@ English | [简体中文](README.zh-CN.md) | [日本語](README.ja.md)
 
 Subscribe to GitHub repository releases, automatically translate and categorize changelogs via AI, and push to Telegram channels/groups.
 
+> ⚠️ **Single-tenant, self-hosted bot.** This bot pushes to one Telegram chat and maintains one shared subscription list. It is NOT a public multi-user service. See [Multi-user hosting note](#multi-user-hosting-note).
+
 ## Features
 
 - Scheduled GitHub Release polling (with ETag caching to save API quota)
 - Persistent state to avoid duplicate notifications (`data/state.json`, cached in GitHub Actions)
 - Tag-based subscription for repos without releases
+- Commit and merged-PR monitoring with simple summary notifications
 - AI-powered translation + categorization (Features, Bug Fixes, Performance, Refactoring, Documentation, Other)
 - Multiple AI providers: OpenAI / Google Gemini / Anthropic Claude
 - Configurable target language for translation (default: English)
@@ -19,20 +22,77 @@ Subscribe to GitHub repository releases, automatically translate and categorize 
 - Auto-retry on send failure (up to 3 times)
 - Manage subscriptions via Telegram commands (daemon mode, optional)
 - Optional `/status` command: compare local Docker Compose versions with GitHub (requires Docker socket)
-- Deploy via Docker Compose or GitHub Actions (zero server needed)
+- Deploy via Docker Compose, local Node.js, or GitHub Actions
+
+### Step 0: Get your Telegram Chat ID
+
+If you don't have your `TELEGRAM_CHAT_ID` yet:
+
+1. Create a bot via [@BotFather](https://t.me/BotFather) and copy the token
+2. Set only `TELEGRAM_BOT_TOKEN` in `.env` (leave other fields empty)
+3. Run `docker compose up -d --build` (or `npm start`)
+4. Send `/start` to your bot in Telegram — copy the `chat_id` from the reply
+5. Optionally send `/bind` for ready-to-copy `.env` lines
+
+The bot runs in **onboarding mode** when `TELEGRAM_CHAT_ID` or `CRON` is missing, or when `AI_API_KEY` is missing for `release` / `tag` subscriptions. In that mode, Telegram commands still work so you can complete setup.
 
 ## Quick Start
 
 ### Prerequisites
 
 1. **Telegram Bot** — Create via [@BotFather](https://t.me/BotFather) to get the Bot Token
-2. **Telegram Chat ID** — Channel username (e.g. `@my_channel`) or group/user numeric ID
-3. **AI API Key** — From any supported AI provider
-4. **GitHub Token** (Optional) — [Create a Personal Access Token](https://github.com/settings/tokens) for higher API rate limits. Recommended if you subscribe to many repos or use frequent polling
+2. **AI API Key** — From any supported AI provider
+3. **GitHub Token** (Optional) — [Create a Personal Access Token](https://github.com/settings/tokens) for higher API rate limits. Recommended if you subscribe to many repos or use frequent polling
 
-### Option 1: GitHub Actions (Recommended)
+> Recommended for most users: start with Docker Compose or `npm start`. These modes support onboarding commands like `/start` and `/bind`, so you can discover `TELEGRAM_CHAT_ID`, verify AI config, and manage subscriptions before deciding whether you need GitHub Actions.
 
-No server required. Fork and configure:
+### Option 1: Docker Compose (Recommended)
+
+```bash
+git clone https://github.com/<your-username>/<your-repo>.git
+cd <your-repo>
+
+cp .env.example .env
+# Edit .env with your configuration (or set only TELEGRAM_BOT_TOKEN for onboarding)
+
+docker compose up -d --build
+
+# View logs
+docker compose logs -f
+
+# Stop
+docker compose down
+```
+
+> Best default for self-hosted use: supports onboarding mode, Telegram commands, and built-in cron scheduling.
+
+> This project does not expose any HTTP port. It pushes messages to Telegram via Telegram API and receives commands via Telegram long polling (when enabled).
+
+### Option 2: Local `npm start`
+
+```bash
+git clone https://github.com/<your-username>/<your-repo>.git
+cd <your-repo>
+
+npm install
+cp .env.example .env
+# Edit .env with your configuration (or set only TELEGRAM_BOT_TOKEN for onboarding)
+
+npm start
+```
+
+For development with auto-restart:
+
+```bash
+npm run dev
+```
+
+### Option 3: GitHub Actions (Optional)
+
+Use this after onboarding is complete and you already know your `TELEGRAM_CHAT_ID`.
+GitHub Actions runs in single-shot mode, so it cannot receive Telegram commands like `/start`, `/bind`, `/subscribe`, or `/list`.
+
+No always-on server required. Fork and configure:
 
 1. Fork this repository (or use it as a template / create your own repo based on it)
 2. Go to **Settings → Secrets and variables → Actions**
@@ -54,47 +114,29 @@ To change the polling interval, edit the workflow schedule in `.github/workflows
 
 > GitHub Actions provides a built-in `GITHUB_TOKEN` automatically (1000 req/hr). No need to configure it separately.
 
-### Option 2: Docker Compose
-
-```bash
-git clone https://github.com/<your-username>/<your-repo>.git
-cd <your-repo>
-
-cp .env.example .env
-# Edit .env with your configuration (see below)
-
-docker compose up -d --build
-
-# View logs
-docker compose logs -f
-
-# Stop
-docker compose down
-```
-
-> This project does not expose any HTTP port. It pushes messages to Telegram via Telegram API and receives commands via Telegram long polling (when enabled).
-
 ## Configuration
 
 All settings are configured via environment variables in the `.env` file:
 
 | Variable             | Required | Default              | Description                                   |
 | -------------------- | -------- | -------------------- | --------------------------------------------- |
-| `SUBSCRIBE_REPOS`    | ⚠️       | —                    | Comma-separated repos to subscribe (e.g. `vuejs/core,nodejs/node`). Required if no subscriptions file is provided |
+| `SUBSCRIBE_REPOS`    | ⚠️ Monitor | —                  | Comma-separated repos to subscribe (e.g. `vuejs/core,nodejs/node`). Required if no subscriptions file is provided |
 | `SUBSCRIPTIONS_PATH` | ❌       | `data/subscriptions.json` | Subscriptions file path (takes priority over `SUBSCRIBE_REPOS` when the file exists) |
-| `TELEGRAM_BOT_TOKEN` | ✅       | —                    | Telegram Bot Token                            |
-| `TELEGRAM_CHAT_ID`   | ✅       | —                    | Target channel/group/user ID                  |
+| `TELEGRAM_BOT_TOKEN` | ✅ Always | —                  | Telegram Bot Token                            |
+| `TELEGRAM_CHAT_ID`   | ⚠️ Monitor | —                 | Target channel/group/user ID                  |
 | `TELEGRAM_ADMIN_CHAT_ID` | ❌   | `TELEGRAM_CHAT_ID`   | Admin chat allowed to run Telegram commands (numeric ID or `@username`) |
 | `TELEGRAM_COMMANDS`  | ❌       | `1`                  | Enable Telegram command loop in daemon mode (`0`/`false` to disable) |
-| `AI_API_KEY`         | ✅       | —                    | AI service API Key                            |
+| `AI_API_KEY`         | ⚠️ Monitor | —                 | AI service API Key. Required for `release` / `tag` monitoring; not needed for `commit` / `pr-merge` only |
 | `AI_MODEL`           | ❌       | `gpt-4o-mini`        | Model name                                    |
 | `AI_PROVIDER`        | ❌       | `openai-completions` | AI provider (see below)                       |
 | `AI_BASE_URL`        | ❌       | SDK default          | Custom API URL (proxy/self-hosted)            |
 | `GITHUB_TOKEN`       | ❌       | —                    | GitHub PAT for higher rate limits (5000 req/hr vs 60 req/hr) |
 | `TIMEZONE`           | ❌       | `Asia/Shanghai`      | IANA timezone for cron and message formatting |
-| `CRON`               | ❌       | —                    | Cron expression (6 fields, with seconds). Required for Docker/local mode |
+| `CRON`               | ⚠️ Monitor | —                 | Cron expression (6 fields, with seconds). Required for Docker/local mode only |
 | `TARGET_LANG`        | ❌       | `English`            | Target language for AI translation            |
 | `DOCKER_SOCKET_PATH` | ❌       | `/var/run/docker.sock` | Docker Engine socket path (only used by `/status`) |
+
+✅ Always required | ⚠️ Required for release monitoring mode | ❌ Optional
 
 > Configure subscriptions using **one** of the following:
 > - `SUBSCRIBE_REPOS`, or
@@ -127,7 +169,7 @@ Invoke-RestMethod "https://api.telegram.org/bot$token/getUpdates" | ConvertTo-Js
 
 Look for `result[].message.chat.id` (or `result[].channel_post.chat.id`), then set `TELEGRAM_CHAT_ID` to that value.
 
-> If `CRON`, `AI_API_KEY`, or `TELEGRAM_CHAT_ID` is missing, the daemon now falls back to **command/onboarding mode** instead of crashing immediately. In that mode, release monitoring is disabled, but Telegram command polling still works so you can use `/start` and `/bind` to finish setup.
+> If `CRON` or `TELEGRAM_CHAT_ID` is missing, or if `AI_API_KEY` is missing while you use `release` / `tag` subscriptions, the daemon now falls back to **command/onboarding mode** instead of crashing immediately. In that mode, monitoring is disabled, but Telegram command polling still works so you can use `/start` and `/bind` to finish setup.
 
 > `TARGET_LANG` controls both AI translation output and category labels (e.g. ✨ Features). Built-in label translations are available for `English`, `Chinese`, and `Japanese`. Other languages will use English labels with AI-translated content.
 >
@@ -159,7 +201,8 @@ AI_MODEL=gpt-4o-mini
 TIMEZONE=Asia/Shanghai
 CRON=0 */10 9-23 * * *
 TARGET_LANG=English
-SUBSCRIBE_REPOS=vuejs/core,nodejs/node
+# Example: vuejs/core,nodejs/node,some-org/lib:tag
+SUBSCRIBE_REPOS=
 ```
 
 ### Scheduling (Cron)
@@ -186,7 +229,8 @@ Examples:
 Set the `SUBSCRIBE_REPOS` environment variable with comma-separated GitHub repos (`owner/repo` format):
 
 ```env
-SUBSCRIBE_REPOS=vuejs/core,nodejs/node,microsoft/vscode
+# Example: vuejs/core,nodejs/node,some-org/lib:tag
+SUBSCRIBE_REPOS=
 ```
 
 Each entry also accepts GitHub URLs and SSH URLs (these are normalized to `owner/repo` internally):
@@ -219,18 +263,22 @@ Each repo can optionally specify a subscription mode with a `:mode` suffix:
 | `owner/repo` | `release` | Subscribe to GitHub Releases (default) |
 | `owner/repo:release` | `release` | Explicitly subscribe to Releases |
 | `owner/repo:tag` | `tag` | Subscribe to new Git tags (for repos without Releases) |
+| `owner/repo:commit` | `commit` | Subscribe to new commits on the default branch |
+| `owner/repo:pr-merge` | `pr-merge` | Subscribe to newly merged pull requests |
 
 Example:
 
 ```env
-SUBSCRIBE_REPOS=vuejs/core,some-org/lib:tag,another/tool:release
+SUBSCRIBE_REPOS=vuejs/core,some-org/lib:tag,another/tool:commit,team/app:pr-merge
 ```
 
 - `vuejs/core` — monitors Releases (default)
 - `some-org/lib:tag` — monitors new Git tags, generates changelog from commits between tags
-- `another/tool:release` — explicitly monitors Releases
+- `another/tool:commit` — monitors new commits on the default branch
+- `team/app:pr-merge` — monitors newly merged pull requests
 
 In **tag mode**, the bot fetches commits between the previous and new tag (up to 50), feeds them to AI for categorization, and sends the result in the same format as release notifications.
+In **commit** and **pr-merge** modes, the bot sends simple title + link summaries and does not use AI translation/categorization.
 
 For GitHub Actions, set this as a **Variable** in repository settings.
 For Docker/local, add it to your `.env` file.
@@ -249,8 +297,8 @@ docker compose restart
 2. Send commands in that chat:
    - `/start` to show current chat info and onboarding hints
    - `/bind` to print ready-to-copy `TELEGRAM_CHAT_ID` and `TELEGRAM_ADMIN_CHAT_ID` lines for the current chat
-   - `/list` to show all subscriptions with Unsubscribe buttons
-   - `/subscribe owner/repo` or `/subscribe https://github.com/owner/repo`
+   - `/list` to show all subscriptions with mode-switch and Unsubscribe buttons
+   - `/subscribe owner/repo`, `/subscribe owner/repo:tag`, `/subscribe owner/repo:commit`, `/subscribe owner/repo:pr-merge`, or `/subscribe https://github.com/owner/repo`
    - `/unsubscribe owner/repo` or `/unsubscribe https://github.com/owner/repo`
    - `/check` to check latest versions (minimal output)
    - `/check owner/repo` to check a specific repo
