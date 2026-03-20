@@ -127,12 +127,21 @@ export async function checkRepo(
   const published = releases.filter((r) => !r.draft);
 
   if (!repoState?.lastRelease) {
+    // First run: silently initialize baseline without notifying.
     const latest = published[0];
-    return {
-      repo,
-      newReleases: latest ? [latest] : [],
-      etag,
-    };
+    if (latest) {
+      const now = new Date().toISOString();
+      state[repo] = {
+        lastRelease: latest.tag_name,
+        lastReleaseDate: latest.published_at,
+        etag,
+        lastCheck: now,
+      };
+      console.log(
+        `[${repo}] Baseline initialized at ${latest.tag_name}`,
+      );
+    }
+    return { repo, newReleases: [], etag };
   }
 
   const newReleases: GitHubRelease[] = [];
@@ -199,8 +208,22 @@ export async function checkRepoTags(
   const tags = (await res.json()) as GitHubTag[];
 
   if (!repoState?.lastTag) {
+    // First run: silently initialize baseline without notifying.
     const latest = tags[0];
-    return { repo, newTags: latest ? [latest] : [], etag };
+    if (latest) {
+      const tagDate = await getCommitDate(repo, latest.commit.sha, token);
+      const now = new Date().toISOString();
+      state[key] = {
+        lastTag: latest.name,
+        lastTagDate: tagDate ?? now,
+        etag,
+        lastCheck: now,
+      };
+      console.log(
+        `[${repo}:tag] Baseline initialized at ${latest.name}`,
+      );
+    }
+    return { repo, newTags: [], etag };
   }
 
   const newTags: GitHubTag[] = [];
